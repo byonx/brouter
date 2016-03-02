@@ -30,7 +30,6 @@ public final class BExpressionMetaData
 
   public short lookupVersion = -1;
   public short lookupMinorVersion = -1;
-  public boolean readVarLength = false;
 
   private HashMap<String,BExpressionContext> listeners = new HashMap<String,BExpressionContext>();
   
@@ -68,9 +67,8 @@ public final class BExpressionMetaData
         lookupMinorVersion = Short.parseShort( line.substring( MINOR_VERSION_TAG.length() ) );
         continue;
       }
-      if ( line.startsWith( VARLENGTH_TAG ) )
+      if ( line.startsWith( VARLENGTH_TAG ) ) // tag removed...
       {
-    	readVarLength = true;
         continue;
       }
       if ( ctx != null ) ctx.parseMetaLine( line );

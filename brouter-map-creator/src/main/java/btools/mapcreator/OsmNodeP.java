@@ -34,14 +34,12 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
    */
   public short selev;
 
-  public boolean isBorder = false;
-
   public final static int NO_BRIDGE_BIT = 1;
   public final static int NO_TUNNEL_BIT = 2;
-  public final static int LCN_BIT = 4;
-  public final static int CR_BIT = 8;
+  public final static int BORDER_BIT = 4;
+  public final static int TRAFFIC_BIT = 8;
 
-  public byte wayBits = 0;
+  public byte bits = 0;
 
   // interface OsmPos
   public int getILat()
@@ -57,7 +55,7 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
   public short getSElev()
   {
     // if all bridge or all tunnel, elevation=no-data
-    return ( wayBits & NO_BRIDGE_BIT ) == 0 || ( wayBits & NO_TUNNEL_BIT ) == 0 ? Short.MIN_VALUE : selev;
+    return ( bits & NO_BRIDGE_BIT ) == 0 || ( bits & NO_TUNNEL_BIT ) == 0 ? Short.MIN_VALUE : selev;
   }
 
   public double getElev()
@@ -103,7 +101,7 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
      return null;
    }
 
-   public void writeNodeData( ByteDataWriter os, boolean writeVarLength, byte[] abBuf ) throws IOException
+   public void writeNodeData( ByteDataWriter os, byte[] abBuf ) throws IOException
    {
      int lonIdx = ilon/62500;
      int latIdx = ilat/62500;
@@ -158,7 +156,7 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
          int writedescbit = 0;
          if ( skipDetailBit == 0 ) // check if description changed
          {
-           int inverseBitByteIndex =  writeVarLength ? 0 : 7;
+           int inverseBitByteIndex =  0;
            boolean inverseDirection = link.isReverse( origin );
            byte[] ab = link.descriptionBitmap;
              int abLen = ab.length;
@@ -198,12 +196,12 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
          if ( writedescbit != 0 )
          {
            // write the way description, code direction into the first bit
-           if ( writeVarLength ) os2.writeByte( lastDescription.length );
+           os2.writeByte( lastDescription.length );
            os2.write( lastDescription );
          }
          if ( nodedescbit != 0 )
          {
-           if ( writeVarLength ) os2.writeByte( nodeDescription.length );
+           os2.writeByte( nodeDescription.length );
            os2.write( nodeDescription );
            nodeDescription = null;
          }
@@ -247,9 +245,19 @@ public class OsmNodeP extends OsmLinkP implements Comparable<OsmNodeP>
     return ((long)ilon)<<32 | ilat;
   }
 
+  public boolean isBorderNode()
+  {
+    return (bits & BORDER_BIT) != 0;
+  }
+
+  public boolean hasTraffic()
+  {
+    return (bits & TRAFFIC_BIT) != 0;
+  }
+
   public boolean isTransferNode()
   {
-    return (!isBorder) && _linkCnt() == 2;
+    return (bits & BORDER_BIT) == 0 && _linkCnt() == 2;
   }
 
   private int _linkCnt()

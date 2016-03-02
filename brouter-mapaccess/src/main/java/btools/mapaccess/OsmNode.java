@@ -75,28 +75,57 @@ public class OsmNode implements OsmPos
     return selev / 4.;
   }
 
- /**
-   * Whether there's a traffic signal
-   */
 
  /**
    * The links to other nodes
    */
     public OsmLink firstlink = null;
 
-    public OsmLink firstreverse = null;
-
-   // whether this node is completed and registerd for map-removal
-   public boolean completed;
-
-   public boolean wasProcessed;
-   public int maxcost; // maximum cost to consider for that node
-
+   // preliminry in forward order to avoid regressions
    public void addLink( OsmLink link )
    {
-     if ( firstlink != null ) link.next = firstlink;
-     firstlink = link;
+     if ( firstlink == null )
+     {
+       firstlink = link;
+     }
+     else
+     {
+       OsmLink l = firstlink;
+       while( l.next != null ) l = l.next;
+       l.next = link;
+     }
    }
+
+  private OsmLink getCompatibleLink( int ilon, int ilat, boolean counterLinkWritten, int state )
+  {
+    for( OsmLink l = firstlink; l != null; l = l.next )
+    {
+      if ( counterLinkWritten == l.counterLinkWritten && l.state == state )
+      {
+        OsmNode t = l.targetNode;
+        if ( t.ilon == ilon && t.ilat == ilat )
+        {
+          l.state = 0;
+          return l;
+        }
+      }
+    }
+    // second try ignoring counterLinkWritten
+    // (border links are written in both directions)
+    for( OsmLink l = firstlink; l != null; l = l.next )
+    {
+      if ( l.state == state )
+      {
+        OsmNode t = l.targetNode;
+        if ( t.ilon == ilon && t.ilat == ilat )
+        {
+          l.state = 0;
+          return l;
+        }
+      }
+    }
+    return null;
+  }
 
   public int calcDistance( OsmPos p )
   {
@@ -111,24 +140,23 @@ public class OsmNode implements OsmPos
     return (int)(d + 1.0 );
   }
 
+   public String toString()
+   {
+     return "" + getIdFromPos();
+   }
 
-   public void parseNodeBody( MicroCache is, OsmNodesMap hollowNodes, DistanceChecker dc, boolean readVarLength )
+   public void parseNodeBody( MicroCache is, OsmNodesMap hollowNodes, DistanceChecker dc )
    {
 	 ByteArrayUnifier abUnifier = hollowNodes.getByteArrayUnifier();
 	   
 	 selev = is.readShort();
-
-     OsmLink lastlink = null;
-
-     int lonIdx = ilon/62500;
-     int latIdx = ilat/62500;
 
      while( is.hasMoreData() )
      {
        int ilonref = ilon;
        int ilatref = ilat;
 
-       OsmLink link = new OsmLink();
+       boolean counterLinkWritten = false;
        OsmTransferNode firstTransferNode = null;
        OsmTransferNode lastTransferNode = null;
        int linklon;
@@ -137,45 +165,24 @@ public class OsmNode implements OsmPos
        for(;;)
        {
          int bitField = is.readByte();
-  //        System.out.println( "parseNodeBody: var=" + readVarLength + " bitField=" + bitField );
-         if ( readVarLength )
-         {
-         	int dlon = is.readVarLengthUnsigned();
-        	int dlat = is.readVarLengthUnsigned();
-        	if ( (bitField & SIGNLON_BITMASK) != 0 ) { dlon = -dlon;}
-        	if ( (bitField & SIGNLAT_BITMASK) != 0 ) { dlat = -dlat;}
-        	linklon = ilonref + dlon;
-        	linklat = ilatref + dlat;
-        	ilonref = linklon;
-        	ilatref = linklat;
-         }
-         else
-         {
-           if ( (bitField & EXTERNAL_BITMASK) != 0 )
-           {
-             // full position for external target
-             linklon = is.readInt();
-             linklat = is.readInt();
-           }
-           else
-           {
-             // reduced position for internal target
-             linklon = is.readShort();
-             linklat = is.readShort();
-             linklon += lonIdx*62500 + 31250;
-             linklat += latIdx*62500 + 31250;
-           }
-         }
+         int dlon = is.readVarLengthUnsigned();
+         int dlat = is.readVarLengthUnsigned();
+         if ( (bitField & SIGNLON_BITMASK) != 0 ) { dlon = -dlon;}
+         if ( (bitField & SIGNLAT_BITMASK) != 0 ) { dlat = -dlat;}
+         linklon = ilonref + dlon;
+         linklat = ilatref + dlat;
+         ilonref = linklon;
+         ilatref = linklat;
          // read variable length or old 8 byte fixed, and ensure that 8 bytes is only fixed
          if ( (bitField & WRITEDESC_BITMASK ) != 0 )
          {
-        	 byte[] ab = new byte[readVarLength ? is.readByte() : 8 ];
+        	 byte[] ab = new byte[is.readByte()];
         	 is.readFully( ab );
         	 description = abUnifier.unify( ab );
          }
          if ( (bitField & NODEDESC_BITMASK ) != 0 )
          {
-        	 byte[] ab = new byte[readVarLength ? is.readByte() : 8 ];
+        	 byte[] ab = new byte[is.readByte()];
         	 is.readFully( ab );
         	 nodeDescription = abUnifier.unify( ab );
          }
@@ -191,10 +198,10 @@ public class OsmNode implements OsmPos
          }
          if ( (bitField & SKIPDETAILS_BITMASK ) != 0 )
          {
-           link.counterLinkWritten = true;
+           counterLinkWritten = true;
          }
          
-         if ( description == null && !link.counterLinkWritten ) throw new IllegalArgumentException( "internal error: missing way description!" );
+         if ( description == null && !counterLinkWritten ) throw new IllegalArgumentException( "internal error: missing way description!" );
          
          boolean isTransfer = (bitField & TRANSFERNODE_BITMASK ) != 0;
          if ( isTransfer )
@@ -203,7 +210,7 @@ public class OsmNode implements OsmPos
            trans.ilon = linklon;
            trans.ilat = linklat;
            trans.descriptionBitmap = description;
-           trans.selev = readVarLength ? (short)(selev + is.readVarLengthSigned()) : is.readShort();
+           trans.selev = (short)(selev + is.readVarLengthSigned());
            if ( lastTransferNode == null )
            {
              firstTransferNode = trans;
@@ -216,13 +223,12 @@ public class OsmNode implements OsmPos
          }
          else
          {
-           link.descriptionBitmap = description;
            break;
          }
        }
 
        // performance shortcut: ignore link if out of reach
-       if ( dc != null && !link.counterLinkWritten )
+       if ( dc != null && !counterLinkWritten )
        {
            if ( !dc.isWithinRadius( ilon, ilat, firstTransferNode, linklon, linklat ) )
            {
@@ -235,47 +241,46 @@ public class OsmNode implements OsmPos
           continue; // skip self-ref
        }
 
-       if ( lastlink == null )
+       // first check the known links for that target
+       OsmLink link = getCompatibleLink( linklon, linklat, counterLinkWritten, 2 );
+       if ( link == null ) // .. not found, then check the hollow nodes
        {
-         firstlink = link;
-       }
-       else
-       {
-         lastlink.next = link;
-       }
-       lastlink = link;
-
-
-       long targetNodeId = ((long)linklon)<<32 | linklat;
-       OsmNode tn = hollowNodes.get( targetNodeId ); // target node
-
-       if ( tn == null )
-       {
-         // node not yet known, create a hollow proxy
-         tn = new OsmNode(linklon, linklat);
-         tn.setHollow();
-         hollowNodes.put( targetNodeId, tn );
-       }
-       else
-       {
-         if ( !( tn.isHollow() || tn.hasHollowLinks() ) )
+         long targetNodeId = ((long)linklon)<<32 | linklat;
+         OsmNode tn = hollowNodes.get( targetNodeId ); // target node
+         if ( tn == null ) // node not yet known, create a new hollow proxy
          {
-           hollowNodes.registerCompletedNode( tn );
+           tn = new OsmNode(linklon, linklat);
+           tn.setHollow();
+           hollowNodes.put( tn );
          }
+         link = new OsmLink();
+         link.targetNode = tn;
+         link.counterLinkWritten = counterLinkWritten;
+         link.state = 1;
+         addLink( link );
        }
-       link.targetNode = tn;
 
-       link.encodeFirsttransfer(firstTransferNode);
-
-       // compute the reverse link
-       if ( !link.counterLinkWritten )
+       // now we have a link with a target node -> get the reverse link
+       OsmLink rlink = link.targetNode.getCompatibleLink( ilon, ilat, !counterLinkWritten, 1 );
+       if ( rlink == null ) // .. not found, create it
        {
-           OsmLink rlink = new OsmLink();
-           byte[] linkDescriptionBitmap = link.descriptionBitmap;
-           rlink.ilonOrigin = tn.ilon;
-           rlink.ilatOrigin = tn.ilat;
-           rlink.targetNode = this;
-           rlink.descriptionBitmap = linkDescriptionBitmap; // default for no transfer-nodes
+         rlink = new OsmLink();
+         rlink.targetNode = this;
+         rlink.counterLinkWritten = !counterLinkWritten;
+         rlink.state = 2;
+         link.targetNode.addLink( rlink );
+       }
+
+       if ( !counterLinkWritten )
+       {
+         // we have the data for that link, so fill both the link ..       
+         link.descriptionBitmap = description;
+         link.encodeFirsttransfer(firstTransferNode);
+
+         // .. and the reverse
+         if ( rlink.counterLinkWritten )
+         {
+           rlink.descriptionBitmap = description; // default for no transfer-nodes
            OsmTransferNode previous = null;
            OsmTransferNode rtrans = null;
            for( OsmTransferNode trans = firstTransferNode; trans != null; trans = trans.next )
@@ -293,19 +298,17 @@ public class OsmNode implements OsmPos
              rtrans.ilat = trans.ilat;
              rtrans.selev = trans.selev;
              rtrans.next = previous;
-             rtrans.descriptionBitmap = linkDescriptionBitmap;
+             rtrans.descriptionBitmap = description;
              previous = rtrans;
            }
            rlink.encodeFirsttransfer(rtrans);
-           rlink.next = firstreverse;
-           firstreverse = rlink;
+         }
        }
 
      }
-
-     if ( !hasHollowLinks() )
+     if ( dc == null )
      {
-       hollowNodes.registerCompletedNode( this );
+       hollowNodes.remove( this );
      }
    }
 
@@ -322,27 +325,6 @@ public class OsmNode implements OsmPos
   public long getIdFromPos()
   {
     return ((long)ilon)<<32 | ilat;
-  }
-
-  public boolean hasHollowLinks()
-  {
-    for( OsmLink link = firstlink; link != null; link = link.next )
-    {
-      if ( link.targetNode.isHollow() ) return true;
-    }
-    return false;
-  }
-
-
-  public int linkCnt()
-  {
-    int cnt = 0;
-
-    for( OsmLink link = firstlink; link != null; link = link.next )
-    {
-      cnt++;
-    }
-    return cnt;
   }
 
   public void unlinkLink( OsmLink link )
@@ -362,34 +344,20 @@ public class OsmNode implements OsmPos
     }
   }
 
-   public OsmLink getReverseLink( int lon, int lat )
-   {
-     for( OsmLink rlink = firstreverse; rlink != null; rlink = rlink.next )
-     {
-       if ( rlink.ilonOrigin == lon && rlink.ilatOrigin == lat )
-       {
-         unlinkRLink( rlink );
-         return rlink;
-       }
-     }
-     return null;
-   }
-
-   public void unlinkRLink( OsmLink rlink )
-   {
-     if ( rlink == firstreverse )
-     {
-       firstreverse = rlink.next;
-       return;
-     }
-     for( OsmLink l = firstreverse; l != null; l = l.next )
-     {
-       if ( l.next == rlink )
-       {
-         l.next = rlink.next;
-         return;
-       }
-     }
-   }
-
+  @Override
+  public boolean equals( Object o )
+  {
+    if ( o instanceof OsmNode )
+    {
+      OsmNode n = (OsmNode)o;
+      return n.ilon == ilon && n.ilat == ilat;
+    }
+    return false;
+  }
+  
+  @Override
+  public int hashCode( )
+  {
+    return ilon + ilat;
+  }
 }

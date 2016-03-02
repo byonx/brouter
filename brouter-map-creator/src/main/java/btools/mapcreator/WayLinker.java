@@ -1,8 +1,12 @@
 package btools.mapcreator;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.RandomAccessFile;
 import java.util.Collections;
 import java.util.List;
@@ -31,6 +35,7 @@ import btools.util.LazyArrayOfLists;
 public class WayLinker extends MapCreatorBase
 {
   private File nodeTilesIn;
+  private File trafficTilesIn;
   private File dataTilesOut;
   private File borderFileIn;
 
@@ -39,11 +44,11 @@ public class WayLinker extends MapCreatorBase
   private boolean readingBorder;
 
   private CompactLongMap<OsmNodeP> nodesMap;
+  private OsmTrafficMap trafficMap;
   private List<OsmNodeP> nodesList;
   private CompactLongSet borderSet;
   private short lookupVersion;
   private short lookupMinorVersion;
-  private boolean writeVarLength;
 
   private long creationTimeStamp;
   
@@ -77,6 +82,7 @@ public class WayLinker extends MapCreatorBase
   public void process( File nodeTilesIn, File wayTilesIn, File borderFileIn, File lookupFile, File profileFile, File dataTilesOut, String dataTilesSuffix ) throws Exception
   {
     this.nodeTilesIn = nodeTilesIn;
+    this.trafficTilesIn = new File( "traffic" );
     this.dataTilesOut = dataTilesOut;
     this.borderFileIn = borderFileIn;
     this.dataTilesSuffix = dataTilesSuffix;
@@ -90,7 +96,6 @@ public class WayLinker extends MapCreatorBase
 
     lookupVersion = meta.lookupVersion;
     lookupMinorVersion = meta.lookupMinorVersion;
-    writeVarLength = meta.readVarLength;
 
     expctxWay.parseFile( profileFile, "global" );
     expctxNode.parseFile( profileFile, "global" );
@@ -126,6 +131,14 @@ public class WayLinker extends MapCreatorBase
       nodesMap = nodesMapFrozen;
       nodesList = nodesMapFrozen.getValueList();
     }
+
+    // read a traffic-file, if any
+    File trafficFile = fileFromTemplate( wayfile, trafficTilesIn, "trf" );
+    if ( trafficFile.exists() )
+    {
+      trafficMap = new OsmTrafficMap();
+      trafficMap.load( trafficFile, minLon, minLat, minLon + 5000000, minLat + 5000000, false );
+    }
   }
 
   @Override
@@ -135,7 +148,7 @@ public class WayLinker extends MapCreatorBase
     n.ilon = data.ilon;
     n.ilat = data.ilat;
     n.selev = data.selev;
-    n.isBorder = readingBorder;
+
     if ( readingBorder || (!borderSet.contains( data.nid )) )
     {
       nodesMap.fastPut( data.nid, n );
@@ -143,6 +156,7 @@ public class WayLinker extends MapCreatorBase
 
     if ( readingBorder )
     {
+      n.bits |= OsmNodeP.BORDER_BIT;
       borderSet.fastAdd( data.nid );
       return;
     }
@@ -160,6 +174,7 @@ public class WayLinker extends MapCreatorBase
   public void nextWay( WayData way ) throws Exception
   {
     byte[] description = abUnifier.unify( way.description );
+    int lastTraffic = 0;
 
     // filter according to profile
     expctxWay.evaluate( false, description, null );
@@ -183,11 +198,20 @@ public class WayLinker extends MapCreatorBase
       if ( n1 != null && n2 != null && n1 != n2 )
       {
         OsmLinkP link = n2.createLink( n1 );
+
+        int traffic = trafficMap == null ? 0 : trafficMap.getTrafficClass( n1.getIdFromPos(), n2.getIdFromPos() );
+        if ( traffic != lastTraffic )
+        {
+          expctxWay.decode( description );
+          expctxWay.addLookupValue( "estimated_traffic_class", traffic == 0 ? 0 : traffic + 1 );
+          description = abUnifier.unify( expctxWay.encode() );
+          lastTraffic = traffic;
+        }
         link.descriptionBitmap = description;
       }
       if ( n2 != null )
       {
-        n2.wayBits |= wayBits;
+        n2.bits |= wayBits;
       }
     }
   }
@@ -197,6 +221,7 @@ public class WayLinker extends MapCreatorBase
   {
     nodesMap = null;
     borderSet = null;
+    trafficMap = null;
     
     byte[] abBuf = new byte[1024*1024];
     byte[] abBuf2 = new byte[10*1024*1024];
@@ -275,7 +300,7 @@ public class WayLinker extends MapCreatorBase
                 for( int ni=0; ni<subList.size(); ni++ )
                 {
                   OsmNodeP n = subList.get(ni);
-                  n.writeNodeData( dos, writeVarLength, abBuf );
+                  n.writeNodeData( dos, abBuf );
                 }
                 byte[] subBytes = dos.toByteArray();
                 pos += subBytes.length + 4; // reserve 4 bytes for crc
